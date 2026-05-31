@@ -1,9 +1,7 @@
 name: Backend CI Pipeline
 
 on:
-  pull_request:
-    paths:
-      - 'src/**'
+  workflow_dispatch:
 
 env:
   IMAGE_NAME: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/goldenowl-devops-repo/app
@@ -20,9 +18,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '26'
-          cache: 'npm'
-          cache-dependency-path: 'src/package-lock.json'
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "src/package-lock.json"
 
       - name: Install Dependencies
         working-directory: ./src
@@ -43,9 +41,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '26'
-          cache: 'npm'
-          cache-dependency-path: 'src/package-lock.json'
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "src/package-lock.json"
 
       - name: Install Dependencies
         working-directory: ./src
@@ -61,8 +59,8 @@ jobs:
     needs: [lint, test]
     runs-on: ubuntu-latest
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: "read"
+      id-token: "write"
 
     steps:
       - name: Checkout Code
@@ -75,7 +73,7 @@ jobs:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Generate Timestamp Tag
         run: |
@@ -90,12 +88,12 @@ jobs:
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
-          format: 'table'
-          exit-code: '0' 
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: "table"
+          exit-code: "0"
           ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
 
       - name: Push Docker Image to Artifact Registry
         run: |
@@ -107,24 +105,24 @@ jobs:
     needs: [lint, test, build-scan-push]
     if: always()
     runs-on: ubuntu-latest
-    
+
     # Give permission to write comment to Pull Request
     permissions:
       pull-requests: write
       contents: read
-      
+
     steps:
       - name: Generate Summary Markdown
         run: |
           cat << 'EOF' > summary.md
           ## CI Pipeline Results
-          
+
           | Tiết trình (Job) | Trạng thái (Status) |
           | --- | ------ |
-          | **Lint Code** | ${{ needs.lint.result == 'success' && 'Passed' ||  Failed' }} |
-          | **Unit Tests** | ${{ needs.test.result == 'success' && ' Passed' || 'Failed' }} |
+          | **Lint Code** | ${{ needs.lint.result == 'success' && 'Passed' || 'Failed' }} |
+          | **Unit Tests** | ${{ needs.test.result == 'success' && 'Passed' || 'Failed' }} |
           | **Build & Scan & Push** | ${{ needs.build-scan-push.result == 'success' && 'Passed' || (needs.build-scan-push.result == 'skipped' && 'Skipped' || 'Failed') }} |
-          
+
           - **Actor:** ${{ github.actor }}
           - **Commit (SHA):** ${{ github.sha }}
           - **Branch:** ${{ github.head_ref || github.ref_name }}
