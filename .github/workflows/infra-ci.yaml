@@ -1,0 +1,157 @@
+name: "Terraform CI - PR Validation"
+
+on:
+  pull_request:
+    paths:
+      - "infrastructure/terraform/**"
+
+permissions:
+  actions: read
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TERRAFORM_VERSION: "1.5.0"
+  WORKING_DIR: "infrastructure/terraform"
+
+jobs:
+  # JOB 1: INFRASTRUCTURE VALIDATION
+  infra-validation:
+    name: "Infra Validation"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+        
+    outputs:
+      init_outcome: ${{ steps.init.outcome }}
+      fmt_outcome: ${{ steps.fmt.outcome }}
+      validate_outcome: ${{ steps.validate.outcome }}
+      plan_outcome: ${{ steps.plan.outcome }}
+      checkov_outcome: ${{ steps.checkov.outcome }}
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: "Set up Python for Checkov"
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Install Checkov"
+        if: always()
+        run: |
+          python -m pip install --upgrade pip
+          pip install checkov
+
+      - name: "Authenticate to Google Cloud"
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: "Set up Cloud SDK"
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: "Terraform Init"
+        id: init
+        run: terraform init -reconfigure
+
+      - name: "Terraform Format Check"
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: "Terraform Validate"
+        id: validate
+        run: terraform validate -no-color
+
+      - name: "Terraform Plan"
+        id: plan
+        run: |
+          set -o pipefail
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan.txt
+
+      - name: "Upload Terraform Plan to GCS Bucket"
+        if: always() && steps.plan.outcome == 'success'
+        run: |
+          gcloud storage cp plan.txt gs://goldenowl-infra-plan-bucket/plans/${{ github.sha }}/plan.txt
+          gcloud storage cp tfplan gs://goldenowl-infra-plan-bucket/plans/${{ github.sha }}/tfplan
+          echo "Uploaded plan to gs://goldenowl-infra-plan-bucket/plans/${{ github.sha }}"
+
+      - name: "Run Checkov"
+        if: always()
+        id: checkov
+        continue-on-error: true
+        run: |
+          checkov -d . --output cli --output json --output-file-path console,checkov.json
+
+  # JOB 2: REPORTING
+  reporting-metrics:
+    name: "Reporting & PR Comments"
+    needs: infra-validation
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Publish final CI overview to Summary"
+        run: |
+          status_icon() {
+            case "$1" in
+              success) echo "SUCCESS" ;;
+              failure) echo "FAILURE" ;;
+              skipped) echo "SKIPPED" ;;
+              cancelled) echo "CANCELLED" ;;
+              *) echo "UNKNOWN" ;;
+            esac
+          }
+
+          {
+            echo "## Terraform CI Overview"
+            echo ""
+            echo "> Checking the validation of Infrastructure as Code (GCP)"
+            echo ""
+            echo "| Job | Outcome |"
+            echo "|-----|---------|"
+            echo "| Infra Validation | $(status_icon '${{ needs.infra-validation.result }}') \`${{ needs.infra-validation.result }}\` |"
+            echo ""
+            echo "| Infra Step | Outcome |"
+            echo "|------------|---------|"
+            echo "| Terraform Init | $(status_icon '${{ needs.infra-validation.outputs.init_outcome }}') \`${{ needs.infra-validation.outputs.init_outcome }}\` |"
+            echo "| Terraform Format | $(status_icon '${{ needs.infra-validation.outputs.fmt_outcome }}') \`${{ needs.infra-validation.outputs.fmt_outcome }}\` |"
+            echo "| Terraform Validate | $(status_icon '${{ needs.infra-validation.outputs.validate_outcome }}') \`${{ needs.infra-validation.outputs.validate_outcome }}\` |"
+            echo "| Terraform Plan | $(status_icon '${{ needs.infra-validation.outputs.plan_outcome }}') \`${{ needs.infra-validation.outputs.plan_outcome }}\` |"
+            echo "| Checkov Scan | $(status_icon '${{ needs.infra-validation.outputs.checkov_outcome }}') \`${{ needs.infra-validation.outputs.checkov_outcome }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Post Terraform Comment on PR"
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform CI Report (Golden Owl DevOps)
+            
+            | Validation Step | Outcome |
+            | --- | --- |
+            | Format & Style | \`${{ needs.infra-validation.outputs.fmt_outcome }}\` |
+            | Initialization | \`${{ needs.infra-validation.outputs.init_outcome }}\` |
+            | Validation | \`${{ needs.infra-validation.outputs.validate_outcome }}\` |
+            | Plan Generation | \`${{ needs.infra-validation.outputs.plan_outcome }}\` |
+            | Checkov Security | \`${{ needs.infra-validation.outputs.checkov_outcome }}\` |
+            
+            *Triggerd by: @${{ github.actor }}*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
