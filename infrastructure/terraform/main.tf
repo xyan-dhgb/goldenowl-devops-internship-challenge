@@ -1,9 +1,9 @@
 #Testing CI Pipeline with Terraform
 module "iam" {
-  source      = "./modules/iam"
-  project_id  = var.project_id
-  app_name    = var.app_name
-  gh_repo = var.gh_repo
+  source     = "./modules/iam"
+  project_id = var.project_id
+  app_name   = var.app_name
+  gh_repo    = var.gh_repo
 }
 
 module "artifact_registry" {
