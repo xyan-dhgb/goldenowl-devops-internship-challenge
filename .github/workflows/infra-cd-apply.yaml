@@ -1,0 +1,153 @@
+name: "Terraform CD - Apply Infrastructure"
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_commit_sha:
+        description: "Commit SHA from the CI plan run (find in PR comment)"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  TERRAFORM_VERSION: "1.5.0"
+  WORKING_DIR: "infrastructure/terraform"
+  GCS_PLAN_BUCKET: "goldenowl-infra-plan-bucket"
+  TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+  TF_VAR_region: ${{ secrets.GCP_REGION }}
+  TF_VAR_app_name: ${{ vars.APP_NAME }}
+  TF_VAR_gh_repo: ${{ vars.GH_REPO }}
+
+jobs:
+  # JOB 1: APPLY INFRASTRUCTURE
+  apply-infra:
+    name: "Apply Infrastructure"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    outputs:
+      verify_branch_outcome: ${{ steps.verify_branch.outcome }}
+      init_outcome: ${{ steps.init.outcome }}
+      download_plan_outcome: ${{ steps.download_plan.outcome }}
+      verify_plan_outcome: ${{ steps.verify_plan.outcome }}
+      apply_outcome: ${{ steps.apply.outcome }}
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Verify branch guard"
+        id: verify_branch
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ "${{ github.ref_name }}" != "master" ]; then
+            echo "ERROR: This workflow must be run from the 'master' branch."
+            echo "Current branch: ${{ github.ref_name }}"
+            exit 1
+          fi
+          echo "✅ Branch check passed: running on 'master'"
+
+      - name: "Set up Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: "Authenticate to Google Cloud"
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: "Set up Cloud SDK"
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: "Terraform Init"
+        id: init
+        run: terraform init -reconfigure
+
+      - name: "Download plan from GCS"
+        id: download_plan
+        run: |
+          echo "Downloading plan for commit: ${{ github.event.inputs.plan_commit_sha }}"
+          gcloud storage cp \
+            "gs://${{ env.GCS_PLAN_BUCKET }}/plans/${{ github.event.inputs.plan_commit_sha }}/tfplan" \
+            tfplan
+          echo "Plan downloaded successfully"
+
+      - name: "Verify downloaded plan"
+        id: verify_plan
+        run: terraform show -no-color tfplan > /dev/null
+
+      - name: "Terraform Apply"
+        id: apply
+        run: |
+          set -o pipefail
+          terraform apply -auto-approve -no-color -input=false tfplan 2>&1 | tee apply.txt
+
+  # JOB 2: REPORTING
+  apply-reporting:
+    name: "Apply Reporting"
+    needs: apply-infra
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Publish Terraform Apply summary"
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          status_icon() {
+            case "$1" in
+              success) echo "SUCCESS" ;;
+              failure) echo "FAILURE" ;;
+              skipped) echo "SKIPPED" ;;
+              cancelled) echo "CANCELLED" ;;
+              *) echo "UNKNOWN" ;;
+            esac
+          }
+
+          APPLY_LOG_PATH="${{ env.WORKING_DIR }}/apply.txt"
+
+          {
+            echo "## Terraform Apply Overview"
+            echo ""
+            echo "> Golden Owl DevOps - Infrastructure Deployment"
+            echo ""
+            echo "| Job | Outcome |"
+            echo "|-----|---------|"
+            echo "| Apply Infrastructure | $(status_icon '${{ needs.apply-infra.result }}') \`${{ needs.apply-infra.result }}\` |"
+            echo ""
+            echo "| Step | Outcome |"
+            echo "|------|---------|"
+            echo "| Branch Guard | $(status_icon '${{ needs.apply-infra.outputs.verify_branch_outcome }}') \`${{ needs.apply-infra.outputs.verify_branch_outcome }}\` |"
+            echo "| Terraform Init | $(status_icon '${{ needs.apply-infra.outputs.init_outcome }}') \`${{ needs.apply-infra.outputs.init_outcome }}\` |"
+            echo "| Download Plan | $(status_icon '${{ needs.apply-infra.outputs.download_plan_outcome }}') \`${{ needs.apply-infra.outputs.download_plan_outcome }}\` |"
+            echo "| Verify Plan | $(status_icon '${{ needs.apply-infra.outputs.verify_plan_outcome }}') \`${{ needs.apply-infra.outputs.verify_plan_outcome }}\` |"
+            echo "| Terraform Apply | $(status_icon '${{ needs.apply-infra.outputs.apply_outcome }}') \`${{ needs.apply-infra.outputs.apply_outcome }}\` |"
+            echo ""
+            echo "**Plan Commit SHA:** \`${{ github.event.inputs.plan_commit_sha }}\`"
+            echo ""
+            echo "**Triggered by:** \`${{ github.actor }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f "${APPLY_LOG_PATH}" ] && [ '${{ needs.apply-infra.result }}' != 'success' ]; then
+            {
+              echo ""
+              echo "<details><summary>Last 40 lines of apply output</summary>"
+              echo ""
+              echo '```'
+              tail -n 40 "${APPLY_LOG_PATH}"
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
