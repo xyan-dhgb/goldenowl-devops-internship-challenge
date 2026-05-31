@@ -46,6 +46,8 @@ resource "google_iam_workload_identity_pool_provider" "github_provider" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github_pool.workload_identity_pool_id
   workload_identity_pool_provider_id = "${local.app_name_normalized}-gh-provider"
 
+  attribute_condition = "attribute.repository == \"${var.gh_repo}\""
+
   attribute_mapping = {
     "google.subject"       = "assertion.sub"
     "attribute.actor"      = "assertion.actor"
