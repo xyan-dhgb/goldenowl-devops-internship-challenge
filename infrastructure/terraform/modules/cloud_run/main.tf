@@ -1,5 +1,9 @@
+locals {
+  app_name_normalized = replace(var.app_name, "_", "-")
+}
+
 resource "google_cloud_run_v2_service" "default" {
-  name     = "${var.app_name}-service"
+  name     = "${local.app_name_normalized}-service"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" # Only allow traffic from Load Balancer
 
