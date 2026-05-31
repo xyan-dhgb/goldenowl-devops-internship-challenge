@@ -1,0 +1,136 @@
+name: "Terraform CD - Destroy Infrastructure"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Type "destroy" to confirm. This action is IRREVERSIBLE.'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  TERRAFORM_VERSION: "1.5.0"
+  WORKING_DIR: "infrastructure/terraform"
+  TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+  TF_VAR_region: ${{ secrets.GCP_REGION }}
+  TF_VAR_app_name: ${{ vars.APP_NAME }}
+  TF_VAR_gh_repo: ${{ vars.GH_REPO }}
+
+jobs:
+  terraform-destroy:
+    name: "Destroy Infrastructure"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Verify running from master branch
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ "${{ github.ref_name }}" != "master" ]; then
+            echo "ERROR: This workflow must be run from the 'master' branch."
+            echo "Current branch: ${{ github.ref_name }}"
+            exit 1
+          fi
+          echo "Branch check passed: running on 'master'"
+
+      - name: Verify destroy confirmation
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ "${{ github.event.inputs.confirm_destroy }}" != "destroy" ]; then
+            echo "ERROR: Confirmation failed. You must type 'destroy' exactly to proceed."
+            echo "You entered: '${{ github.event.inputs.confirm_destroy }}'"
+            exit 1
+          fi
+          echo "Destroy confirmation accepted."
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -reconfigure
+
+      - name: Terraform Plan Destroy
+        id: plan
+        run: |
+          set -o pipefail
+          terraform plan -destroy -no-color -input=false 2>&1 | tee destroy-plan.txt
+
+      - name: Terraform Destroy
+        id: destroy
+        run: |
+          set -o pipefail
+          terraform destroy -auto-approve -no-color -input=false 2>&1 | tee destroy.txt
+
+      - name: Post destroy summary to GitHub Step Summary
+        if: always()
+        run: |
+          {
+            cat << 'EOF'
+          ## Terraform Destroy Overview
+
+          > [!CAUTION]
+          > Infrastructure has been destroyed. This action is irreversible.
+
+          | Step         | Result |
+          |--------------|--------|
+          | Init         | `${{ steps.init.outcome }}` |
+          | Plan Destroy | `${{ steps.plan.outcome }}` |
+          | Destroy      | `${{ steps.destroy.outcome }}` |
+
+          **Commit:** `${{ github.sha }}` &nbsp;|&nbsp; **By:** `${{ github.actor }}`
+
+          <details><summary>Destroy Output</summary>
+
+          ```
+          EOF
+            if [ -f destroy.txt ]; then
+              tail -n 50 destroy.txt
+            else
+              echo "No output found."
+            fi
+            printf '```\n</details>\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify on failure
+        if: always() && failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = [
+              '## Terraform Destroy Failed',
+              '',
+              `**Triggered by:** @${{ github.actor }}`,
+              `**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Terraform Destroy Failed - ${{ github.sha }}`,
+              body,
+              labels: ['terraform', 'cd-failure'],
+            });
