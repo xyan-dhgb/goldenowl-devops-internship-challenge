@@ -4,12 +4,16 @@ module "iam" {
   project_id = var.project_id
   app_name   = var.app_name
   gh_repo    = var.gh_repo
+
+  depends_on = [google_project_service.apis]
 }
 
 module "artifact_registry" {
   source   = "./modules/artifact_registry"
   region   = var.region
   app_name = var.app_name
+
+  depends_on = [google_project_service.apis]
 }
 
 module "cloud_run" {
@@ -19,6 +23,8 @@ module "cloud_run" {
   app_name              = var.app_name
   image_url             = "us-docker.pkg.dev/cloudrun/container/hello" # Placeholder for the first run
   service_account_email = module.iam.cloud_run_sa_email
+
+  depends_on = [google_project_service.apis]
 }
 
 module "load_balancer" {
@@ -27,4 +33,6 @@ module "load_balancer" {
   region         = var.region
   app_name       = var.app_name
   cloud_run_name = module.cloud_run.service_name
+
+  depends_on = [google_project_service.apis]
 }
