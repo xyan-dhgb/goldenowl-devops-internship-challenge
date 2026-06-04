@@ -3,7 +3,8 @@ locals {
 }
 
 resource "google_cloud_run_v2_service" "default" {
-  name     = "${local.app_name_normalized}-service"
+  name                = "${local.app_name_normalized}-service"
+  deletion_protection = false
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" # Only allow traffic from Load Balancer
 
