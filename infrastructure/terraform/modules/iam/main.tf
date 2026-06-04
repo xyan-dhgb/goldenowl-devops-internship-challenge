@@ -38,13 +38,13 @@ resource "google_service_account_iam_member" "sa_user" {
 
 # Configure Workload Identity Federation (Don't export JSON key file)
 resource "google_iam_workload_identity_pool" "github_pool" {
-  workload_identity_pool_id = "${local.app_name_normalized}-gh-pool"
+  workload_identity_pool_id = "${local.app_name_normalized}-pool-v2"
   display_name              = "GitHub Actions Pool"
 }
 
 resource "google_iam_workload_identity_pool_provider" "github_provider" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github_pool.workload_identity_pool_id
-  workload_identity_pool_provider_id = "${local.app_name_normalized}-gh-provider"
+  workload_identity_pool_provider_id = "${local.app_name_normalized}-prov-v2"
 
   attribute_condition = "attribute.repository == \"${var.gh_repo}\""
 
